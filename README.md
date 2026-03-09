@@ -13,7 +13,7 @@
 - **Simple**: Just send a request to the API with the TMDB or IMDB ID of the movie or TV show and get the subtitles for.
 - **Fast**: The API is hosted on a edge cloud provider with multiple proxies for spoofing requests (response time varies).
 - **Free**: The API is completely free to use.
-- **Hosted**: Available at [sub.wyzie.ru](https://sub.wyzie.ru).
+- **Hosted**: Available at [sub.wyzie.ru](https://sub.wyzie.io).
 
 [*Providers Status*](https://sub.wyzie.ru/status)
 
