@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://sub.wyzie.ru/">
+  <a href="https://sub.wyzie.io/">
     <img src="https://i.postimg.cc/L5ppKYC5/cclogo.png" height="120">
     <h1 align="center">Wyzie Subs</h1>
   </a>
@@ -13,9 +13,9 @@
 - **Simple**: Just send a request to the API with the TMDB or IMDB ID of the movie or TV show and get the subtitles for.
 - **Fast**: The API is hosted on a edge cloud provider with multiple proxies for spoofing requests (response time varies).
 - **Free**: The API is completely free to use.
-- **Hosted**: Available at [sub.wyzie.ru](https://sub.wyzie.io).
+- **Hosted**: Available at [sub.wyzie.io](https://sub.wyzie.io).
 
-[*Providers Status*](https://sub.wyzie.ru/status)
+[*Providers Status*](https://sub.wyzie.io/status)
 
 ### Request Flow Chart
 ![request flow chart](.github/flowchart.png)

@@ -3,7 +3,7 @@ name = "sub-scraping"
 main = "./.output/server/index.mjs"
 compatibility_date = "2025-02-14"
 toconfig = "./tsconfig.json"
-route = { pattern = "sub.wyzie.ru", custom_domain = true }
+route = { pattern = "sub.wyzie.io", custom_domain = true }
 
 minify = true
 
