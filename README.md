@@ -14,6 +14,7 @@
 - **Fast**: The API is hosted on a edge cloud provider with multiple proxies for spoofing requests (response time varies).
 - **Free**: The API is completely free to use.
 - **Hosted**: Available at [sub.wyzie.io](https://sub.wyzie.io).
+- **AI Translation (beta)**: Translate any subtitle into 80+ languages on demand, streamed cue by cue. Free during beta. See [the docs](https://docs.wyzie.io/subs/usage/translate).
 
 [*Providers Status*](https://sub.wyzie.io/status)
 
