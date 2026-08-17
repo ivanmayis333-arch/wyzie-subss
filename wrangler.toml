@@ -1,16 +1,14 @@
-# wrangler.toml (wrangler v3.78.6^)
-name = "sub-scraping"
-main = "./.output/server/index.mjs"
-compatibility_date = "2025-02-14"
-toconfig = "./tsconfig.json"
-route = { pattern = "sub.wyzie.io", custom_domain = true }
+name = "wyzie-subss"
+main = "worker.js"
+compatibility_date = "2026-08-17"
 
-minify = true
+[[durable_objects.bindings]]
+name = "AI_GATE"
+class_name = "AITranslationGate"
+
+[exports.AITranslationGate]
+type = "durable-object"
+storage = "sqlite"
 
 [observability]
 enabled = true
-head_sampling_rate = 1
-
-[build]
-command = "pnpm build:cloudflare"
-watch_dir = "src"
