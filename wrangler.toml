@@ -6,9 +6,9 @@ compatibility_date = "2026-08-17"
 name = "AI_GATE"
 class_name = "AITranslationGate"
 
-[exports.AITranslationGate]
-type = "durable-object"
-storage = "sqlite"
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AITranslationGate"]
 
 [observability]
 enabled = true
