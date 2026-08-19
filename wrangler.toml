@@ -1,4 +1,4 @@
-name = "wyzie-nuvio-bridge"
+name = "wyzie-subss"
 main = "worker.js"
 compatibility_date = "2026-08-19"
 
