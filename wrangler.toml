@@ -1,14 +1,10 @@
-name = "wyzie-subss"
+name = "wyzie-nuvio-bridge"
 main = "worker.js"
-compatibility_date = "2026-08-17"
+compatibility_date = "2026-08-19"
 
-[[durable_objects.bindings]]
-name = "AI_GATE"
-class_name = "AITranslationGate"
+[vars]
+WYZIE_LANGUAGES = "es"
+WYZIE_HI = "false"
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["AITranslationGate"]
-
-[observability]
-enabled = true
+[secrets]
+required = ["WYZIE_API_KEY"]
