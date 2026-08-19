@@ -8,3 +8,7 @@ WYZIE_HI = "false"
 
 [secrets]
 required = ["WYZIE_API_KEY"]
+
+[[migrations]]
+tag = "remove-ai-translation-gate"
+deleted_classes = ["AITranslationGate"]
