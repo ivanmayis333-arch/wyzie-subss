@@ -13,6 +13,11 @@ required = ["WYZIE_API_KEY"]
 binding = "AI_TRANSLATIONS"
 bucket_name = "wyzie-subss-ai-translations"
 
+[durable_objects]
+bindings = [
+  { name = "AI_TRANSLATION_GATE", class_name = "SpanishAiTranslationGate" }
+]
+
 [[migrations]]
 tag = "remove-ai-translation-gate"
 deleted_classes = ["AITranslationGate"]
