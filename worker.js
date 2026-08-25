@@ -2,9 +2,13 @@ const WYZIE_ORIGIN = "https://sub.wyzie.io";
 const TARGET_LANGUAGE = "Spanish";
 const DISPLAY_LANGUAGE = "Español Latino (IA)";
 
+const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024;
+const ERROR_RETRY_MS = 10 * 60 * 1000;
+const CACHE_SECONDS = 30 * 24 * 60 * 60;
+
 const MANIFEST = {
   id: "io.wyzie.ai.es419",
-  version: "1.0.0",
+  version: "1.0.1",
   name: "Wyzie IA Español Latino",
   description:
     "Subtítulos traducidos por IA al español mediante Wyzie.",
@@ -19,12 +23,8 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
   "Access-Control-Allow-Headers": "*",
   "Access-Control-Expose-Headers":
-    "Content-Type, Content-Length, X-AI-Status"
+    "Content-Type, Content-Length, X-AI-Status, X-AI-Reason, X-Wyzie-Status"
 };
-
-const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024;
-const ERROR_RETRY_MS = 10 * 60 * 1000;
-const R2_CACHE_SECONDS = 30 * 24 * 60 * 60;
 
 // =========================================================
 // RESPUESTAS
@@ -41,7 +41,7 @@ function jsonResponse(data, status = 200, extraHeaders = {}) {
   });
 }
 
-function subtitleResponse(body, statusSource = "unknown") {
+function subtitleResponse(body, source = "unknown") {
   return new Response(body, {
     status: 200,
     headers: {
@@ -50,27 +50,35 @@ function subtitleResponse(body, statusSource = "unknown") {
       "Content-Disposition":
         'inline; filename="espanol-latino-ai.srt"',
       "Cache-Control":
-        `public, max-age=${R2_CACHE_SECONDS}, immutable`,
-      "X-AI-Status": statusSource,
+        `public, max-age=${CACHE_SECONDS}, immutable`,
+      "X-AI-Status": source,
       "X-Content-Type-Options": "nosniff"
     }
   });
 }
 
-function failureSrt(reason, status = 200) {
-  /*
-   * Se devuelve un SRT vacío para evitar que Nuvio
-   * entre en bucles de reintento por códigos 4xx/5xx.
-   *
-   * Nunca se guarda ni se cachea este contenido.
-   */
+/*
+ * Los valores de headers HTTP deben ser ASCII.
+ * Esta función elimina acentos y caracteres no válidos.
+ */
+function asciiHeaderValue(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7E]/g, "?")
+    .slice(0, 180);
+}
+
+function failureSrt(reason = "AI unavailable", upstreamStatus = "") {
   const emptySrt =
-    "1\n" +
-    "00:00:00,000 --> 00:00:00,001\n" +
-    "\n";
+    "1\r\n" +
+    "00:00:00,000 --> 00:00:00,001\r\n" +
+    "\r\n";
+
+  const safeReason = asciiHeaderValue(reason);
 
   return new Response(emptySrt, {
-    status,
+    status: 200,
     headers: {
       ...CORS_HEADERS,
       "Content-Type": "application/x-subrip; charset=utf-8",
@@ -78,39 +86,40 @@ function failureSrt(reason, status = 200) {
         'inline; filename="espanol-latino-ai.srt"',
       "Cache-Control": "no-store",
       "X-AI-Status": "error",
-      "X-AI-Reason": String(reason).slice(0, 180)
+      "X-AI-Reason": safeReason,
+      "X-Wyzie-Status": String(upstreamStatus || "")
     }
   });
 }
 
 // =========================================================
-// VALIDACIÓN DE RUTAS
+// RUTAS
 // =========================================================
 
-function parseSubtitleResourcePath(pathname) {
-  const movieMatch =
-    /^\/subtitles\/movie\/(tt\d+)\.json$/i.exec(pathname);
+function parseSubtitlePath(pathname) {
+  const movie = pathname.match(
+    /^\/subtitles\/movie\/(tt\d+)\.json$/i
+  );
 
-  if (movieMatch) {
+  if (movie) {
     return {
       type: "movie",
-      mediaId: movieMatch[1],
+      mediaId: movie[1],
       season: "",
       episode: ""
     };
   }
 
-  const seriesMatch =
-    /^\/subtitles\/series\/(tt\d+):(\d+):(\d+)\.json$/i.exec(
-      pathname
-    );
+  const series = pathname.match(
+    /^\/subtitles\/series\/(tt\d+):(\d+):(\d+)\.json$/i
+  );
 
-  if (seriesMatch) {
+  if (series) {
     return {
       type: "series",
-      mediaId: seriesMatch[1],
-      season: seriesMatch[2],
-      episode: seriesMatch[3]
+      mediaId: series[1],
+      season: series[2],
+      episode: series[3]
     };
   }
 
@@ -118,58 +127,61 @@ function parseSubtitleResourcePath(pathname) {
 }
 
 function parseTranslationPath(pathname) {
-  const movieMatch =
-    /^\/translate\/movie\/(tt\d+)\.srt$/i.exec(pathname);
+  const movie = pathname.match(
+    /^\/translate\/movie\/(tt\d+)\.srt$/i
+  );
 
-  if (movieMatch) {
+  if (movie) {
     return {
       type: "movie",
-      mediaId: movieMatch[1],
+      mediaId: movie[1],
       season: "",
       episode: ""
     };
   }
 
-  const seriesMatch =
-    /^\/translate\/series\/(tt\d+):(\d+):(\d+)\.srt$/i.exec(
-      pathname
-    );
+  const series = pathname.match(
+    /^\/translate\/series\/(tt\d+):(\d+):(\d+)\.srt$/i
+  );
 
-  if (seriesMatch) {
+  if (series) {
     return {
       type: "series",
-      mediaId: seriesMatch[1],
-      season: seriesMatch[2],
-      episode: seriesMatch[3]
+      mediaId: series[1],
+      season: series[2],
+      episode: series[3]
     };
   }
 
   return null;
 }
 
-function buildTranslationPath(media) {
+function buildTranslationUrl(origin, media) {
   if (media.type === "series") {
-    return `/translate/series/${media.mediaId}:${media.season}:${media.episode}.srt`;
+    return (
+      `${origin}/translate/series/` +
+      `${media.mediaId}:${media.season}:${media.episode}.srt`
+    );
   }
 
-  return `/translate/movie/${media.mediaId}.srt`;
+  return `${origin}/translate/movie/${media.mediaId}.srt`;
 }
 
 // =========================================================
-// CACHÉ
+// CACHE KEY
 // =========================================================
 
 function buildCacheKey(media) {
   return [
     "ai-es-419",
-    safePathPart(media.mediaId),
-    safePathPart(media.season || "movie"),
-    safePathPart(media.episode || "0"),
+    safePart(media.mediaId),
+    safePart(media.season || "movie"),
+    safePart(media.episode || "0"),
     "Spanish"
   ].join("/") + ".srt";
 }
 
-function safePathPart(value) {
+function safePart(value) {
   return String(value || "")
     .trim()
     .replace(/[^a-zA-Z0-9._-]/g, "_")
@@ -200,40 +212,41 @@ function looksLikeSrt(text) {
     return false;
   }
 
-  /*
-   * Comprueba que exista al menos un bloque
-   * con formato temporal SRT.
-   */
   return /\d+\s*\r?\n\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}/.test(
     value
   );
 }
 
-async function isValidR2Subtitle(object) {
-  if (!object) return false;
+async function readValidR2Subtitle(object) {
+  if (!object) return null;
 
   if (
     object.size &&
     Number(object.size) > MAX_SUBTITLE_BYTES
   ) {
-    return false;
+    return null;
   }
 
   try {
     const text = await object.text();
-    return looksLikeSrt(text);
+
+    if (!looksLikeSrt(text)) {
+      return null;
+    }
+
+    return text;
   } catch {
-    return false;
+    return null;
   }
 }
 
 // =========================================================
-// LLAMADA DIRECTA A WYZIE
+// WYzIE TRANSLATION
 // =========================================================
 
 async function fetchWyzieTranslation(env, media) {
   if (!env.WYZIE_API_KEY) {
-    throw new Error("WYZIE_API_KEY no está configurada");
+    throw new Error("WYZIE_API_KEY is not configured");
   }
 
   const params = new URLSearchParams();
@@ -261,7 +274,7 @@ async function fetchWyzieTranslation(env, media) {
     })
   );
 
-  const response = await fetch(requestUrl, {
+  return fetch(requestUrl, {
     method: "GET",
     redirect: "follow",
     headers: {
@@ -269,8 +282,6 @@ async function fetchWyzieTranslation(env, media) {
       "User-Agent": "Wyzie-AI-ES419-Addon/1.0"
     }
   });
-
-  return response;
 }
 
 // =========================================================
@@ -285,7 +296,7 @@ export class SpanishAiTranslationGate {
 
   async fetch(request) {
     if (request.method !== "POST") {
-      return failureSrt("Método interno no permitido");
+      return failureSrt("Internal method not allowed");
     }
 
     let payload;
@@ -293,7 +304,7 @@ export class SpanishAiTranslationGate {
     try {
       payload = await request.json();
     } catch {
-      return failureSrt("Payload interno inválido");
+      return failureSrt("Invalid internal payload");
     }
 
     const {
@@ -305,46 +316,54 @@ export class SpanishAiTranslationGate {
     } = payload || {};
 
     if (!cacheKey || !mediaId || !type) {
-      return failureSrt("Datos internos incompletos");
+      return failureSrt("Incomplete internal data");
     }
 
     /*
-     * Todas las solicitudes del mismo contenido pasan
-     * de forma ordenada por este bloque.
+     * Serializa solicitudes del mismo Durable Object.
      */
     return this.state.blockConcurrencyWhile(async () => {
       const now = Date.now();
 
       /*
-       * Segunda comprobación obligatoria de R2.
-       *
-       * La primera comprobación se hace en el Worker principal.
-       * Esta segunda protege contra dos solicitudes simultáneas.
+       * Segunda comprobación de R2.
+       * Es necesaria para evitar dos llamadas simultáneas.
        */
-      const cached = await this.env.AI_TRANSLATIONS.get(
-        cacheKey
-      );
+      const cachedObject =
+        await this.env.AI_TRANSLATIONS.get(cacheKey);
 
-      if (cached && await isValidR2Subtitle(cached)) {
-        const body = await cached.text();
+      const cachedText =
+        await readValidR2Subtitle(cachedObject);
 
-        return subtitleResponse(body, "r2-after-lock");
+      if (cachedText) {
+        await this.state.storage.put("translation-state", {
+          status: "success",
+          cacheKey,
+          finishedAt: now
+        });
+
+        return subtitleResponse(cachedText, "r2-after-lock");
       }
 
-      /*
-       * Si hubo un error reciente, no llamamos repetidamente
-       * a Wyzie durante el periodo de enfriamiento.
-       */
       const previousState =
         await this.state.storage.get("translation-state");
 
+      /*
+       * Si hubo un error reciente, no repetimos la llamada
+       * pagada hasta que termine el periodo de espera.
+       */
       if (
         previousState?.status === "failed" &&
         previousState.retryAfter &&
         now < previousState.retryAfter
       ) {
+        const originalReason =
+          previousState.upstreamStatus
+            ? `Blocked: Wyzie HTTP ${previousState.upstreamStatus}`
+            : previousState.reason || "temporary error";
+
         return failureSrt(
-          `Bloqueo temporal hasta ${new Date(
+          `${originalReason}. Retry after ${new Date(
             previousState.retryAfter
           ).toISOString()}`
         );
@@ -369,10 +388,12 @@ export class SpanishAiTranslationGate {
           episode
         });
       } catch (error) {
+        const message = String(error?.message || error);
+
         console.error(
           JSON.stringify({
             event: "wyzie_translate_network_error",
-            message: String(error?.message || error)
+            message
           })
         );
 
@@ -383,14 +404,16 @@ export class SpanishAiTranslationGate {
           finishedAt: Date.now()
         });
 
-        return failureSrt("Error de red al consultar Wyzie");
+        return failureSrt("Wyzie network error");
       }
 
       if (!upstream.ok) {
+        const responseStatus = upstream.status;
+
         console.error(
           JSON.stringify({
             event: "wyzie_translate_http_error",
-            status: upstream.status,
+            status: responseStatus,
             mediaId,
             type,
             season: season || null,
@@ -400,14 +423,15 @@ export class SpanishAiTranslationGate {
 
         await this.state.storage.put("translation-state", {
           status: "failed",
-          reason: `http-${upstream.status}`,
-          upstreamStatus: upstream.status,
+          reason: `http-${responseStatus}`,
+          upstreamStatus: responseStatus,
           retryAfter: Date.now() + ERROR_RETRY_MS,
           finishedAt: Date.now()
         });
 
         return failureSrt(
-          `Wyzie respondió HTTP ${upstream.status}`
+          `Wyzie HTTP ${responseStatus}`,
+          responseStatus
         );
       }
 
@@ -421,27 +445,29 @@ export class SpanishAiTranslationGate {
       ) {
         await this.state.storage.put("translation-state", {
           status: "failed",
-          reason: "too-large",
+          reason: "subtitle-too-large",
           retryAfter: Date.now() + ERROR_RETRY_MS,
           finishedAt: Date.now()
         });
 
-        return failureSrt("Subtítulo demasiado grande");
+        return failureSrt("Subtitle too large");
       }
 
       let subtitleText;
 
       try {
         /*
-         * Esperamos el SRT completo antes de guardarlo en R2.
-         * Así las siguientes solicitudes reciben un archivo completo.
+         * Wyzie transmite el SRT.
+         * Esperamos el texto completo para guardarlo en R2.
          */
         subtitleText = await upstream.text();
       } catch (error) {
+        const message = String(error?.message || error);
+
         console.error(
           JSON.stringify({
             event: "wyzie_translate_body_error",
-            message: String(error?.message || error)
+            message
           })
         );
 
@@ -452,24 +478,21 @@ export class SpanishAiTranslationGate {
           finishedAt: Date.now()
         });
 
-        return failureSrt(
-          "No se pudo leer la respuesta de Wyzie"
-        );
+        return failureSrt("Could not read Wyzie response");
       }
 
-      const size = new TextEncoder()
-        .encode(subtitleText)
-        .byteLength;
+      const subtitleBytes =
+        new TextEncoder().encode(subtitleText).byteLength;
 
-      if (size > MAX_SUBTITLE_BYTES) {
+      if (subtitleBytes > MAX_SUBTITLE_BYTES) {
         await this.state.storage.put("translation-state", {
           status: "failed",
-          reason: "too-large",
+          reason: "subtitle-too-large",
           retryAfter: Date.now() + ERROR_RETRY_MS,
           finishedAt: Date.now()
         });
 
-        return failureSrt("Subtítulo demasiado grande");
+        return failureSrt("Subtitle too large");
       }
 
       if (!looksLikeSrt(subtitleText)) {
@@ -491,13 +514,11 @@ export class SpanishAiTranslationGate {
           finishedAt: Date.now()
         });
 
-        return failureSrt(
-          "Wyzie no devolvió un SRT válido"
-        );
+        return failureSrt("Wyzie did not return valid SRT");
       }
 
       /*
-       * Sólo se guarda una traducción válida.
+       * Sólo se guarda una respuesta SRT válida.
        */
       await this.env.AI_TRANSLATIONS.put(
         cacheKey,
@@ -509,7 +530,7 @@ export class SpanishAiTranslationGate {
             contentDisposition:
               'inline; filename="espanol-latino-ai.srt"',
             cacheControl:
-              `public, max-age=${R2_CACHE_SECONDS}, immutable`
+              `public, max-age=${CACHE_SECONDS}, immutable`
           },
           customMetadata: {
             source: "wyzie",
@@ -549,11 +570,11 @@ export class SpanishAiTranslationGate {
 }
 
 // =========================================================
-// ENDPOINT DE SUBTÍTULOS DEL ADDON
+// ADDON: RESPUESTA DE SUBTÍTULOS
 // =========================================================
 
 async function handleSubtitleResource(request, env, url) {
-  const media = parseSubtitleResourcePath(url.pathname);
+  const media = parseSubtitlePath(url.pathname);
 
   if (!media) {
     return jsonResponse(
@@ -563,19 +584,17 @@ async function handleSubtitleResource(request, env, url) {
     );
   }
 
-  const translationPath = buildTranslationPath(media);
-  const translationUrl = `${url.origin}${translationPath}`;
+  const translationUrl =
+    buildTranslationUrl(url.origin, media);
 
-  /*
-   * Para la respuesta JSON no se llama a Wyzie.
-   * Solamente se devuelve el enlace a /translate.
-   */
+  const subtitleId =
+    media.type === "series"
+      ? `ai-es419-${media.mediaId}-${media.season}-${media.episode}`
+      : `ai-es419-${media.mediaId}`;
+
   const subtitles = [
     {
-      id:
-        media.type === "series"
-          ? `ai-es419-${media.mediaId}-${media.season}-${media.episode}`
-          : `ai-es419-${media.mediaId}`,
+      id: subtitleId,
       url: translationUrl,
       lang: DISPLAY_LANGUAGE
     }
@@ -604,18 +623,18 @@ async function handleSubtitleResource(request, env, url) {
 }
 
 // =========================================================
-// ENDPOINT DE TRADUCCIÓN
+// TRADUCCIÓN
 // =========================================================
 
 async function handleTranslation(request, env, url) {
   const media = parseTranslationPath(url.pathname);
 
   if (!media) {
-    return failureSrt("Ruta de traducción inválida");
+    return failureSrt("Invalid translation route");
   }
 
   /*
-   * HEAD no genera traducciones y no llama a Wyzie.
+   * HEAD no consume traducción.
    */
   if (request.method === "HEAD") {
     return new Response(null, {
@@ -632,21 +651,21 @@ async function handleTranslation(request, env, url) {
   }
 
   if (request.method !== "GET") {
-    return failureSrt("Método no permitido");
+    return failureSrt("Method not allowed");
+  }
+
+  if (!env.WYZIE_API_KEY) {
+    return failureSrt("WYZIE_API_KEY is not configured");
   }
 
   if (!env.AI_TRANSLATIONS) {
-    return failureSrt("Binding AI_TRANSLATIONS no configurado");
+    return failureSrt("AI_TRANSLATIONS binding is not configured");
   }
 
   if (!env.AI_TRANSLATION_GATE) {
     return failureSrt(
-      "Binding AI_TRANSLATION_GATE no configurado"
+      "AI_TRANSLATION_GATE binding is not configured"
     );
-  }
-
-  if (!env.WYZIE_API_KEY) {
-    return failureSrt("WYZIE_API_KEY no configurada");
   }
 
   const cacheKey = buildCacheKey(media);
@@ -654,12 +673,14 @@ async function handleTranslation(request, env, url) {
   /*
    * Primera comprobación de R2.
    */
-  const cached = await env.AI_TRANSLATIONS.get(cacheKey);
+  const cachedObject =
+    await env.AI_TRANSLATIONS.get(cacheKey);
 
-  if (cached && await isValidR2Subtitle(cached)) {
-    const body = await cached.text();
+  const cachedText =
+    await readValidR2Subtitle(cachedObject);
 
-    return subtitleResponse(body, "r2-cache");
+  if (cachedText) {
+    return subtitleResponse(cachedText, "r2-cache");
   }
 
   /*
@@ -690,8 +711,10 @@ async function handleTranslation(request, env, url) {
 
   const headers = new Headers(response.headers);
 
-  for (const [key, value] of Object.entries(CORS_HEADERS)) {
-    headers.set(key, value);
+  for (const [name, value] of Object.entries(
+    CORS_HEADERS
+  )) {
+    headers.set(name, value);
   }
 
   return new Response(response.body, {
@@ -701,7 +724,7 @@ async function handleTranslation(request, env, url) {
 }
 
 // =========================================================
-// HOME / HEALTH / MANIFEST
+// PÁGINA PRINCIPAL
 // =========================================================
 
 function homePage(url) {
@@ -715,14 +738,14 @@ function homePage(url) {
 <body>
   <h1>Wyzie IA Español Latino</h1>
   <p>Addon activo.</p>
-  <p>Manifest:
+  <p>
     <a href="${url.origin}/manifest.json">
-      ${url.origin}/manifest.json
+      Abrir manifest.json
     </a>
   </p>
-  <p>Health:
+  <p>
     <a href="${url.origin}/health">
-      ${url.origin}/health
+      Abrir health
     </a>
   </p>
 </body>
@@ -741,7 +764,7 @@ function homePage(url) {
 // EXPORT PRINCIPAL
 // =========================================================
 
-export default {
+const worker_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
 
@@ -778,7 +801,9 @@ export default {
           target: TARGET_LANGUAGE
         },
         200,
-        { "Cache-Control": "no-store" }
+        {
+          "Cache-Control": "no-store"
+        }
       );
     }
 
@@ -804,3 +829,5 @@ export default {
     );
   }
 };
+
+export default worker_default;
