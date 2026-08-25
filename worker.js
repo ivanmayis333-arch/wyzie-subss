@@ -10,7 +10,7 @@ const ERROR_RETRY_MS = 10 * 60 * 1000;
 
 const MANIFEST = {
   id: "io.wyzie.ai.es419",
-  version: "2.0.0",
+  version: "2.0.1",
   name: "Wyzie IA Español Latino",
   description:
     "Subtítulos traducidos por IA al español latinoamericano para Nuvio.",
@@ -89,7 +89,36 @@ function failureSrt(reason = "AI unavailable", upstreamStatus = "") {
 }
 
 // =========================================================
-// PARSEO DE RUTAS STREMIO
+// CONFIGURACIÓN PARA STREMIO.WYZIE.IO
+// =========================================================
+
+function buildWyzieConfig(env) {
+  if (!env.WYZIE_API_KEY) {
+    throw new Error("WYZIE_API_KEY is not configured");
+  }
+
+  const config = {
+    apiKey: env.WYZIE_API_KEY
+  };
+
+  if (
+    typeof env.WYZIE_LANGUAGES === "string" &&
+    env.WYZIE_LANGUAGES.trim()
+  ) {
+    config.languages = env.WYZIE_LANGUAGES.trim();
+  }
+
+  if (
+    String(env.WYZIE_HI || "").toLowerCase() === "true"
+  ) {
+    config.hi = true;
+  }
+
+  return encodeURIComponent(JSON.stringify(config));
+}
+
+// =========================================================
+// PARSEO DE RUTAS
 // =========================================================
 
 function parseMediaPath(pathname) {
@@ -169,7 +198,7 @@ function buildTranslationPath(media) {
 }
 
 // =========================================================
-// URL IA DE WYZIE
+// URLS DE SUBTÍTULOS IA
 // =========================================================
 
 function unwrapLocalUrl(rawUrl) {
@@ -211,10 +240,6 @@ function unwrapLocalUrl(rawUrl) {
     return null;
   }
 
-  /*
-   * Permitimos únicamente los dominios de Wyzie.
-   * Evita que el Worker se convierta en un proxy abierto.
-   */
   const allowedHosts = [
     "sub.wyzie.io",
     "stremio.wyzie.io"
@@ -250,24 +275,24 @@ function isAiSubtitle(subtitle) {
 
   const url = String(subtitle.url);
 
-  const ai =
+  const isAi =
     subtitle.ai === true ||
     source === "ai" ||
     url.includes("/translate");
 
-  const spanish =
+  const isSpanish =
     !language ||
     language === "es" ||
     language.startsWith("es-") ||
     language === "spa";
 
-  const srt =
+  const isSrt =
     !format ||
     format === "srt" ||
     url.toLowerCase().includes(".srt") ||
     url.includes("/translate");
 
-  return ai && spanish && srt;
+  return isAi && isSpanish && isSrt;
 }
 
 function selectAiSubtitle(data) {
@@ -303,7 +328,7 @@ function selectAiSubtitle(data) {
 }
 
 // =========================================================
-// CACHE KEY
+// CACHE
 // =========================================================
 
 function safePart(value) {
@@ -394,12 +419,15 @@ async function readValidR2(object) {
 }
 
 // =========================================================
-// BÚSQUEDA EN EL ADDON FUNCIONAL DE WYZIE
+// BÚSQUEDA EN STREMIO.WYZIE.IO
 // =========================================================
 
-async function fetchWyzieStremioSearch(media) {
+async function fetchWyzieStremioSearch(env, media) {
+  const encodedConfig = buildWyzieConfig(env);
   const path = buildUpstreamPath(media);
-  const upstreamUrl = `${UPSTREAM_ORIGIN}${path}`;
+
+  const upstreamUrl =
+    `${UPSTREAM_ORIGIN}/${encodedConfig}${path}`;
 
   console.log(
     JSON.stringify({
@@ -407,20 +435,23 @@ async function fetchWyzieStremioSearch(media) {
       mediaId: media.mediaId,
       type: media.type,
       season: media.season || null,
-      episode: media.episode || null
+      episode: media.episode || null,
+      configAttached: true
     })
   );
 
-  const response = await fetch(upstreamUrl, {
+  return fetch(upstreamUrl, {
     method: "GET",
     redirect: "follow",
     headers: {
       Accept: "application/json",
       "User-Agent": "Subsense-Wyzie-AI/2.0"
+    },
+    cf: {
+      cacheEverything: true,
+      cacheTtl: 300
     }
   });
-
-  return response;
 }
 
 // =========================================================
@@ -480,11 +511,9 @@ export class SpanishAiTranslationGate {
 
   async discover(media) {
     const now = Date.now();
-    const previous = await this.state.storage.get("ai-meta");
+    const previous =
+      await this.state.storage.get("ai-meta");
 
-    /*
-     * Si aún tenemos una URL tk válida, no repetimos /subtitles.
-     */
     if (
       previous?.targetUrl &&
       previous.expiresAt &&
@@ -501,24 +530,25 @@ export class SpanishAiTranslationGate {
     let upstream;
 
     try {
-      upstream = await fetchWyzieStremioSearch(media);
+      upstream = await fetchWyzieStremioSearch(
+        this.env,
+        media
+      );
     } catch (error) {
       console.error(
         JSON.stringify({
           event: "wyzie_stremio_search_network_error",
           mediaId: media.mediaId,
-          message: String(error?.message || error).slice(0, 300)
+          message: String(error?.message || error)
+            .slice(0, 300)
         })
       );
 
-      return jsonResponse(
-        {
-          ok: false,
-          found: false,
-          error: "upstream-network-error"
-        },
-        200
-      );
+      return jsonResponse({
+        ok: false,
+        found: false,
+        error: "upstream-network-error"
+      });
     }
 
     if (!upstream.ok) {
@@ -569,7 +599,10 @@ export class SpanishAiTranslationGate {
         JSON.stringify({
           event: "wyzie_ai_not_found",
           mediaId: media.mediaId,
-          type: media.type
+          type: media.type,
+          totalSubtitles: Array.isArray(data.subtitles)
+            ? data.subtitles.length
+            : 0
         })
       );
 
@@ -614,13 +647,11 @@ export class SpanishAiTranslationGate {
   }
 
   async translate(media) {
-    const now = Date.now();
-    let meta = await this.state.storage.get("ai-meta");
+    let meta =
+      await this.state.storage.get("ai-meta");
 
-    /*
-     * Si no hay URL tk, la descubrimos.
-     * Esto sólo ocurre cuando Nuvio pide realmente el SRT.
-     */
+    const now = Date.now();
+
     if (
       !meta?.targetUrl ||
       !meta?.cacheKey ||
@@ -635,7 +666,8 @@ export class SpanishAiTranslationGate {
         );
       }
 
-      meta = await this.state.storage.get("ai-meta");
+      meta =
+        await this.state.storage.get("ai-meta");
     }
 
     const cacheKey = meta.cacheKey;
@@ -748,14 +780,6 @@ export class SpanishAiTranslationGate {
           sourceId: meta.sourceId,
           contentType:
             upstream.headers.get("content-type") || null,
-          xCache:
-            upstream.headers.get("x-cache") || null,
-          xSourceLanguage:
-            upstream.headers.get("x-source-language") || null,
-          xTargetLanguage:
-            upstream.headers.get("x-target-language") || null,
-          xSourceProvider:
-            upstream.headers.get("x-source-provider") || null,
           upstreamBody: safeBody
         })
       );
@@ -821,7 +845,9 @@ export class SpanishAiTranslationGate {
         finishedAt: Date.now()
       });
 
-      return failureSrt("Wyzie did not return valid SRT");
+      return failureSrt(
+        "Wyzie did not return valid SRT"
+      );
     }
 
     await this.env.AI_TRANSLATIONS.put(
@@ -887,9 +913,6 @@ async function handleSubtitleResource(request, env, url) {
     );
   }
 
-  /*
-   * HEAD no hace búsqueda ni llamada a Wyzie.
-   */
   if (request.method === "HEAD") {
     return new Response(null, {
       status: 200,
@@ -956,12 +979,6 @@ async function handleSubtitleResource(request, env, url) {
         {
           id,
           url: subtitleUrl,
-
-          /*
-           * spa mantiene compatibilidad con el protocolo.
-           * display/name hacen visible la etiqueta personalizada
-           * en clientes que las soporten.
-           */
           lang: "spa",
           display: DISPLAY_LANGUAGE,
           name: DISPLAY_LANGUAGE
@@ -984,9 +1001,6 @@ async function handleTranslation(request, env, url) {
     return failureSrt("Invalid translation route");
   }
 
-  /*
-   * HEAD/probe no consume crédito.
-   */
   if (request.method === "HEAD") {
     return new Response(null, {
       status: 200,
