@@ -9,6 +9,14 @@ WYZIE_HI = "false"
 [secrets]
 required = ["WYZIE_API_KEY"]
 
+[[r2_buckets]]
+binding = "AI_TRANSLATIONS"
+bucket_name = "wyzie-subss-ai-translations"
+
 [[migrations]]
 tag = "remove-ai-translation-gate"
 deleted_classes = ["AITranslationGate"]
+
+[[migrations]]
+tag = "add-spanish-ai-translation-gate"
+new_sqlite_classes = ["SpanishAiTranslationGate"]
