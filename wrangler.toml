@@ -2,6 +2,13 @@ name = "wyzie-subss"
 main = "worker.js"
 compatibility_date = "2026-08-19"
 
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 [vars]
 WYZIE_LANGUAGES = "es"
 WYZIE_HI = "false"
